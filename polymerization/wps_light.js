@@ -6,6 +6,7 @@
     环境变量名：无
     环境变量值：无
     备注：WPS轻量版/手机端签到，接口 vip.wps.cn/sign/v2。
+          ⚠️ 返回 result=error & msg=10003 多为“需验证码/风控”或“今日已签”，免验证失败会统一走验证码重试；若重试仍失败按提示去 vip.wps.cn 自查。
           配合“wps”分配置表使用（cookie 即 wps_sid）。
           “wps”分配置表列：A=cookie，B=是否执行，C=账号名称，
           D=转存PPT(稻壳版用)，E=是否渠道1打卡(本脚本用)，F=是否渠道2打卡，G=Signature(渠道2)
@@ -496,9 +497,9 @@ function execHandle(cookie, pos) {
     // 把服务端错误码翻译成人话，避免只显示“10003”这种天书
     function describeFail(r) {
       let m = (r.msg == null ? "" : r.msg).toString();
-      // 登录态/鉴权失效：WPS 新版把“cookie 失效”的空 msg 改为返回 10003
+      // 10003 在 WPS 轻量版单凭数字码无法区分，常见三种：①今日已签到 ②wps_sid 过期 ③风控验证码，给出自查指引
       if (m == "10003" || m == "") {
-        return "wps_sid 已过期/失效，请在「wps」分配置表重新填写 cookie（重新登录 vip.wps.cn 后获取 wps_sid）";
+        return "返回 10003（登录/验证类）：请去 vip.wps.cn 自查——显示『今日已签』则无需处理；要求重新登录则 wps_sid 过期需更新「wps」分表 cookie；都正常则是风控验证码，可稍后重试或手动签";
       }
       if (m.indexOf("captcha") >= 0 || m.indexOf("验证码") >= 0) {
         return "被风控要求验证码，暂时无法自动通过，可关闭本账号列E或手动签到";
@@ -515,10 +516,12 @@ function execHandle(cookie, pos) {
     let r0 = parseSignResp(resp0);
     console.log(r0);
     if (reportResult(r0)) {
-      // 成功，直接结束
-    } else if (r0.result == "error" && (r0.msg.indexOf("captcha") >= 0 || r0.msg.indexOf("验证码") >= 0)) {
-      // 2. 需要验证码：先刷新验证码图片 session，再带固定坐标重试
-      console.log("📡 触发验证码，开始刷新并带坐标重试");
+      // 免验证直接成功或今日已签到，结束
+    } else {
+      // 2. 免验证未通过（含 10003 等），统一刷新验证码 + 带坐标重试
+      //    说明：WPS 现可能用 result=error&msg=10003 表示“需验证码/风控”，
+      //          不一定带 captcha 文案；社区 ck_wps.py 对 result=error 一律走验证码重试。
+      console.log("📡 免验证未通过（" + (r0.msg || "") + "），尝试刷新验证码并带坐标重试");
       let dataWithCaptcha = {
         "platform": "8",
         "captcha_pos": "137.00431974731889, 36.00431593261568",
@@ -543,8 +546,6 @@ function execHandle(cookie, pos) {
       if (!ok) {
         messageFail += "❌ " + describeFail(r0) + "（带坐标重试 10 次未通过）\n";
       }
-    } else {
-      messageFail += "❌ " + describeFail(r0) + "\n";
     }
 
   } catch {
