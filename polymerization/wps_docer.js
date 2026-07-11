@@ -457,7 +457,6 @@ function execHandle(cookie, pos) {
     let resp = HTTP.fetch(url, {
       method: "post",
       headers: headers,
-      data: data,
     });
 
     // 签到结果处理（修复点：原脚本将签到结果解析整段注释并硬编码 flagSign=1，
