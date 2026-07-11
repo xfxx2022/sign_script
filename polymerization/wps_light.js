@@ -554,6 +554,28 @@ function execHandle(cookie, pos) {
       return "共 " + fmtBytes(total);
     }
 
+    // 解析“签到累计奖励”字段（data 顶层 total_sign_rewards / day_sign_rewards / month_rewards）。
+    // 轻量版签到奖励为 space_N（N MB 云空间），这些累计字段通常为 MB 数值或 {space:N} 结构。
+    function parseSignRewards(raw) {
+      if (!raw) return [];
+      let lines = [];
+      let pairs = [
+        ["total_sign_rewards", "📅 累计签到获得"],
+        ["day_sign_rewards", "📆 今日签到奖励"],
+        ["month_rewards", "🗓 本月签到奖励"]
+      ];
+      for (let p of pairs) {
+        let v = raw[p[0]];
+        if (typeof v === "number" && v > 0) {
+          lines.push(p[1] + "：" + v + " MB 云空间");
+        } else if (typeof v === "object" && v !== null) {
+          let si = v["space"] || v["space_total"] || v["mb"];
+          if (typeof si === "number") lines.push(p[1] + "：" + si + " MB 云空间");
+        }
+      }
+      return lines;
+    }
+
     // 把服务端返回 data 里的奖励翻译成可读文案
     function formatReward(data) {
       if (!data) return "";
@@ -603,16 +625,34 @@ function execHandle(cookie, pos) {
     if (pre.ok) {
       console.log("📊 get_data 原始 data: " + JSON.stringify(pre.raw));
       console.log("📦 spaces_info 原始: " + JSON.stringify(pre.raw.spaces_info));
-      // 诊断：递归找出所有“空间/容量”相关字段（验证遍历是否生效）
+      // 诊断：打印可能含空间/奖励的字段原始值，便于确认单位与含义
+      let probeKeys = ["total_sign_rewards", "day_sign_rewards", "month_rewards", "integral", "additional_sign_times"];
+      for (let rk of probeKeys) {
+        if (typeof pre.raw[rk] !== "undefined") console.log("🔢 " + rk + " = " + JSON.stringify(pre.raw[rk]));
+      }
+      if (pre.raw.userinfo) {
+        let ui = pre.raw.userinfo;
+        for (let rk of ["vip", "wealth", "total_buy", "mb_discount"]) {
+          if (typeof ui[rk] !== "undefined") console.log("🔢 userinfo." + rk + " = " + JSON.stringify(ui[rk]));
+        }
+      }
+      // 递归找出所有“空间/容量”相关字段（验证遍历是否生效）
       let hints = [];
       findSpaceHints(pre.raw, "", hints);
       console.log("🔍 空间相关字段候选(" + hints.length + "): " + (hints.length ? JSON.stringify(hints) : "无"));
-      // 精准解析 spaces_info（已确认 data 顶层存在该字段）
+      // 1) 优先用 spaces_info（若服务端返回了真实云盘容量）
       let sp = parseSpaceInfo(pre.raw);
       if (sp) {
         messageSuccess += "💾 当前云空间：" + sp + "\n";
       } else {
-        console.log("⚠️ 未能从 spaces_info 解析出空间数值，请检查 📦 行");
+        // 2) spaces_info 为空数组（已确认），改用签到累计奖励字段近似显示云空间
+        let rl = parseSignRewards(pre.raw);
+        if (rl.length) {
+          for (let l of rl) messageSuccess += l + "\n";
+          console.log("💡 spaces_info 为空，已用签到累计奖励字段近似显示云空间（单位按 MB 计，若与账号实际不符请告知）");
+        } else {
+          console.log("⚠️ spaces_info 为空且无签到累计奖励字段，该接口不返回账号总容量，需另寻接口");
+        }
       }
     }
     if (pre.ok && pre.isSign) {
