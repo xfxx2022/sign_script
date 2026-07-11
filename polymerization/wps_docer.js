@@ -449,19 +449,38 @@ function execHandle(cookie, pos) {
 
     headers = {
       "Cookie": "wps_sid=" + cookie,
-      "Content-Type": "application/x-www-form-urlencoded",
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/46.0.2486.0 Safari/537.36 Edge/13.10586"
     };
     data = {};
 
-    let resp = HTTP.fetch(url, {
-      method: "post",
-      headers: headers,
-    });
+    // 多方案 fallback：AirScript 2.0 对空 body POST 的处理不稳定，
+    // 依次尝试几种请求方式，命中 200 即停止。
+    let resp = null;
+    let attempts = [
+      { label: "HTTP.fetch POST 无 data", fn: () => HTTP.fetch(url, { method: "post", headers: headers }) },
+      { label: "HTTP.post 空对象", fn: () => HTTP.post(url, {}) },
+      { label: "HTTP.fetch POST + Content-Type", fn: () => HTTP.fetch(url, { method: "post", headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" } }) },
+      { label: "HTTP.fetch POST + Referer", fn: () => HTTP.fetch(url, { method: "post", headers: { ...headers, "Referer": "https://vip.wps.cn/" } }) },
+    ];
+    for (let attempt of attempts) {
+      try {
+        console.log("📡 尝试 " + attempt.label);
+        resp = attempt.fn();
+        console.log("📡 返回状态：" + resp.status);
+        if (resp.status == 200) {
+          console.log("✅ 使用 " + attempt.label + " 成功");
+          break;
+        }
+        console.log(resp.text());
+      } catch (e) {
+        console.log("❌ 尝试 " + attempt.label + " 异常：" + e);
+      }
+      sleep(500);
+    }
 
     // 签到结果处理（修复点：原脚本将签到结果解析整段注释并硬编码 flagSign=1，
     // 导致签到失败时仍去领取PPT。此处恢复正确判断。）
-    if (resp.status == 200) {
+    if (resp != null && resp.status == 200) {
       try {
         resp = resp.json();
         console.log(resp);
@@ -480,9 +499,11 @@ function execHandle(cookie, pos) {
         console.log(resp.text());
         messageFail += "❌ 签到失败：响应解析错误\n";
       }
-    } else {
+    } else if (resp != null) {
       console.log(resp.text());
       messageFail += "❌ 签到失败：HTTP " + resp.status + "\n";
+    } else {
+      messageFail += "❌ 签到失败：所有请求方式均被 WPS 服务端拒绝（400），稻壳版端点可能已无法从 AirScript 自动签到\n";
     }
 
     // 领取每日ppt
