@@ -105,9 +105,12 @@ var configBody = [
     { name: 'hfweather', note: '和风天气', pushPriority: '1',},
     { name: 'piaofang', note: '电影票房排行',},
     { name: 'ciba', note: '词霸每日一句',},
-    { name: 'deepseek', note: 'deepseek分析工具',},
-    
-    // { name: '（修改这里）', note: '（修改这里）',},  // 添加新增内容
+  { name: 'deepseek', note: 'deepseek分析工具',},
+  { name: 'wps_light', note: 'WPS轻量版签到',},
+  { name: 'wps_docer', note: 'WPS稻壳版签到',},
+  { name: 'wps_client', note: 'WPS客户端版签到',},
+
+  // { name: '（修改这里）', note: '（修改这里）',},  // 添加新增内容
 ];
 
 
@@ -166,9 +169,9 @@ var subConfigDdmc = [
 
 // 定制化分配置表内容，WPS
 var subConfigWps = [
-  ['cookie(默认20个)', '是否执行(是/否)', '账号名称(可不填写)', '转存PPT(是/否)', '是否渠道1打卡(是/否)', '是否渠道2打卡(是/否)', 'Signature(渠道2)'],
-  ['xxxxxxxx1', '是', '昵称1', '否', '是', '否' , 'xxxxxxxx' ,],
-  ['xxxxxxxx2', '否', '昵称2', '否', '是', '否' , 'xxxxxxxx' ,]
+  ['cookie(默认20个)', '是否执行(是/否)', '账号名称(可不填写)', '转存PPT(是/否)', '是否渠道1打卡(是/否)', '是否渠道2打卡(是/否)', '预留列(未使用)'],
+  ['xxxxxxxx1', '是', '昵称1', '否', '是', '否' , '' ,],
+  ['xxxxxxxx2', '否', '昵称2', '否', '是', '否' , '' ,]
 ]
 
 // 定制化分配置表内容，小米商城
