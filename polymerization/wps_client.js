@@ -521,6 +521,10 @@ function execHandle(cookie, pos) {
         } else {
           messageFail += "❌ 打卡失败：" + (r2["msg"] || "未知错误") + "\n";
         }
+      } else if (msg.indexOf("Captcha") >= 0 || msg.indexOf("ClientCode") >= 0 || msg.indexOf("Required") >= 0) {
+        // 端点已升级：现强制要求微信验证码(captcha)与客户端标识(clientCode)。
+        // 该验证码需调用微信 wx.login() 获取，自动化脚本无法取得，故优雅跳过本渠道。
+        messageFail += "⚠️ 渠道2打卡端点现需微信验证码(captcha/clientCode)，自动化无法完成；\n   请改用 WPS 微信小程序手动打卡，或在分表将该行「列F」设为「否」关闭本渠道\n";
       } else {
         messageFail += "❌ 打卡失败：" + msg + "\n";
       }
