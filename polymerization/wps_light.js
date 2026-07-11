@@ -450,42 +450,72 @@ function execHandle(cookie, pos) {
     }
 
     let url = "https://vip.wps.cn/sign/v2";
+    let captchaUrl = "https://vip.wps.cn/checkcode/signin/captcha.png?platform=8&encode=0&img_witdh=275.164&img_height=69.184";
     headers = {
       "Cookie": "wps_sid=" + cookie,
       "Content-Type": "application/x-www-form-urlencoded",
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/46.0.2486.0 Safari/537.36 Edge/13.10586"
     };
-    data = {
-      "platform": "8",
-      "captcha_pos": "137.00431974731889, 36.00431593261568",
-      "img_witdh": "275.164",
-      "img_height": "69.184"
-    };
 
-    // AirScript 2.0 中 HTTP.fetch 对 data 对象的序列化不稳定，
-    // 使用 HTTP.post(url, data, { headers }) 与能跑的 golo.js 等脚本一致。
-    let resp = HTTP.post(url, data, { headers: headers });
-
-    if (resp.status == 200) {
+    // 解析响应，返回 { ok: true/false, result: "ok"|"error"|... , msg: string }
+    function parseSignResp(resp) {
+      if (resp.status != 200) return { ok: false, result: "", msg: "HTTP " + resp.status };
       try {
-        resp = resp.json();
-        console.log(resp);
-        let result = resp["result"];
-        let msg = resp["msg"] || "";
-        if (result == "ok" || msg == "ok") {
-          messageSuccess += "🎉 签到成功\n";
-        } else if (msg.indexOf("已经") >= 0 || msg.indexOf("已签") >= 0 || msg.indexOf("had") >= 0) {
-          messageSuccess += "📢 今日已签到\n";
-        } else {
-          messageFail += "❌ 签到失败：" + msg + "\n";
-        }
+        let j = resp.json();
+        return { ok: true, result: j["result"] || "", msg: j["msg"] || "" };
       } catch {
-        console.log(resp.text());
-        messageFail += "❌ 签到失败：响应解析错误\n";
+        return { ok: true, result: "", msg: "响应解析错误" };
+      }
+    }
+
+    function reportResult(r) {
+      if (r.result == "ok" || r.msg == "ok") {
+        messageSuccess += "🎉 签到成功\n";
+        return true;
+      }
+      if (r.msg.indexOf("已经") >= 0 || r.msg.indexOf("已签") >= 0 || r.msg.indexOf("had") >= 0) {
+        messageSuccess += "📢 今日已签到\n";
+        return true;
+      }
+      return false;
+    }
+
+    // 1. 先尝试不带验证码坐标（部分账号/时段可直接免验证）
+    console.log("📡 轻量版：先尝试免验证签到");
+    let resp0 = HTTP.post(url, { "platform": "8" }, { headers: headers });
+    let r0 = parseSignResp(resp0);
+    console.log(r0);
+    if (reportResult(r0)) {
+      // 成功，直接结束
+    } else if (r0.result == "error" && (r0.msg.indexOf("captcha") >= 0 || r0.msg.indexOf("验证码") >= 0)) {
+      // 2. 需要验证码：先刷新验证码图片 session，再带固定坐标重试
+      console.log("📡 触发验证码，开始刷新并带坐标重试");
+      let dataWithCaptcha = {
+        "platform": "8",
+        "captcha_pos": "137.00431974731889, 36.00431593261568",
+        "img_witdh": "275.164",
+        "img_height": "69.184"
+      };
+      let ok = false;
+      for (let n = 0; n < 10; n++) {
+        try {
+          HTTP.get(captchaUrl, { headers: headers }); // 触发服务端刷新验证码
+        } catch {}
+        sleep(200);
+        let resp = HTTP.post(url, dataWithCaptcha, { headers: headers });
+        let r = parseSignResp(resp);
+        console.log("第" + (n + 1) + "次带坐标尝试：" + JSON.stringify(r));
+        if (reportResult(r)) {
+          ok = true;
+          break;
+        }
+        sleep(300);
+      }
+      if (!ok) {
+        messageFail += "❌ 签到失败：" + r0.msg + "（带坐标重试 10 次未通过）\n";
       }
     } else {
-      console.log(resp.text());
-      messageFail += "❌ 签到失败：HTTP " + resp.status + "\n";
+      messageFail += "❌ 签到失败：" + r0.msg + "\n";
     }
 
   } catch {
