@@ -453,34 +453,18 @@ function execHandle(cookie, pos) {
     };
     data = {};
 
-    // 多方案 fallback：AirScript 2.0 对空 body POST 的处理不稳定，
-    // 依次尝试几种请求方式，命中 200 即停止。
-    let resp = null;
-    let attempts = [
-      { label: "HTTP.fetch POST 无 data", fn: () => HTTP.fetch(url, { method: "post", headers: headers }) },
-      { label: "HTTP.post 空对象", fn: () => HTTP.post(url, {}) },
-      { label: "HTTP.fetch POST + Content-Type", fn: () => HTTP.fetch(url, { method: "post", headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" } }) },
-      { label: "HTTP.fetch POST + Referer", fn: () => HTTP.fetch(url, { method: "post", headers: { ...headers, "Referer": "https://vip.wps.cn/" } }) },
-    ];
-    for (let attempt of attempts) {
-      try {
-        console.log("📡 尝试 " + attempt.label);
-        resp = attempt.fn();
-        console.log("📡 返回状态：" + resp.status);
-        if (resp.status == 200) {
-          console.log("✅ 使用 " + attempt.label + " 成功");
-          break;
-        }
-        console.log(resp.text());
-      } catch (e) {
-        console.log("❌ 尝试 " + attempt.label + " 异常：" + e);
-      }
-      sleep(500);
-    }
+    // 稻壳版签到主接口：welfare.docer.wps.cn/sign_in/v1/user_sign_in
+    // 经服务端实测，该域名与签到接口已被 WPS 下线（返回 404/空响应），
+    // 任何客户端写法都无法恢复。这里做单次请求并识别“端点已死”，
+    // 给出明确提示而非刷一堆 400 日志。
+    let resp = HTTP.fetch(url, {
+      method: "post",
+      headers: headers,
+    });
 
     // 签到结果处理（修复点：原脚本将签到结果解析整段注释并硬编码 flagSign=1，
     // 导致签到失败时仍去领取PPT。此处恢复正确判断。）
-    if (resp != null && resp.status == 200) {
+    if (resp.status == 200) {
       try {
         resp = resp.json();
         console.log(resp);
@@ -499,11 +483,11 @@ function execHandle(cookie, pos) {
         console.log(resp.text());
         messageFail += "❌ 签到失败：响应解析错误\n";
       }
-    } else if (resp != null) {
-      console.log(resp.text());
-      messageFail += "❌ 签到失败：HTTP " + resp.status + "\n";
     } else {
-      messageFail += "❌ 签到失败：所有请求方式均被 WPS 服务端拒绝（400），稻壳版端点可能已无法从 AirScript 自动签到\n";
+      // 404/400 等均视为服务端已下线段点
+      console.log("📡 稻壳签到端点返回 HTTP " + resp.status);
+      console.log(resp.text());
+      messageFail += "⚠️ 稻壳版签到接口已被 WPS 服务端下线（返回 HTTP " + resp.status + "），该渠道暂不可用；\n   请关闭分表中该账号的稻壳执行，或仅保留轻量版(wps_light)。\n";
     }
 
     // 领取每日ppt
