@@ -492,20 +492,46 @@ function execHandle(cookie, pos) {
       }
     }
 
-    // 从 get_data 的 data 中尽力解析云空间总量（字段名/单位不确定，做容错）
+    // 递归查找 data 里所有“空间/容量”相关字段（字段名/单位不确定，先采集真实结构）
+    function findSpaceHints(obj, path, out) {
+      if (!obj || typeof obj !== "object") return;
+      if (out.length > 50) return; // 防止超大对象刷屏
+      for (let k in obj) {
+        let lower = ("" + k).toLowerCase();
+        let hit = lower.indexOf("space") >= 0 || lower.indexOf("capacity") >= 0 ||
+                  lower.indexOf("quota") >= 0 || lower.indexOf("cloud") >= 0 ||
+                  lower.indexOf("storage") >= 0 || lower.indexOf("room") >= 0 ||
+                  lower === "used" || lower === "total";
+        let v = obj[k];
+        if (hit && (typeof v === "number" || typeof v === "string") && v !== "" && v !== null) {
+          out.push({ key: (path ? path + "." : "") + k, val: v });
+        }
+        if (v && typeof v === "object") findSpaceHints(v, (path ? path + "." : "") + k, out);
+      }
+    }
+
+    // 从 get_data 的 data 中尽力解析云空间总量（递归查找，兼容 userinfo 内嵌）
     function parseSpace(raw) {
       if (!raw) return null;
-      let candidates = ["space", "total_space", "space_total", "cloud_space", "my_space", "all_space", "quota", "capacity", "space_size", "totalSpace", "cloudSpace", "member_space"];
-      for (let k of candidates) {
-        let v = raw[k];
-        if (typeof v === "number" && v > 0) {
-          if (v >= 1024 * 1024 * 1024) return (v / 1024 / 1024 / 1024).toFixed(2) + " GB";
-          if (v >= 1024 * 1024) return (v / 1024 / 1024).toFixed(2) + " MB";
-          if (v >= 1024) return (v / 1024).toFixed(2) + " KB";
-          return v + " B";
+      let hints = [];
+      findSpaceHints(raw, "", hints);
+      let totalVal = null, spaceVal = null;
+      for (let h of hints) {
+        let key = h.key.toLowerCase();
+        let val = parseFloat(h.val);
+        if (isNaN(val)) continue;
+        if (key.indexOf("total") >= 0 || key.indexOf("capacity") >= 0 || key.indexOf("quota") >= 0) {
+          if (totalVal === null) totalVal = val;
+        } else if (key.indexOf("space") >= 0) {
+          if (spaceVal === null) spaceVal = val;
         }
       }
-      return null;
+      let pick = (totalVal !== null) ? totalVal : spaceVal;
+      if (pick === null) return null;
+      if (pick >= 1024 * 1024 * 1024) return (pick / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+      if (pick >= 1024 * 1024) return (pick / (1024 * 1024)).toFixed(2) + " MB";
+      if (pick >= 1024) return (pick / 1024).toFixed(2) + " KB";
+      return pick + " B";
     }
 
     // 把服务端返回 data 里的奖励翻译成可读文案
@@ -556,6 +582,12 @@ function execHandle(cookie, pos) {
     // 打印 get_data 原始 data 便于确认空间/连签等字段（字段名不确定，先采集）
     if (pre.ok) {
       console.log("📊 get_data 原始 data: " + JSON.stringify(pre.raw));
+      // 诊断：递归找出所有“空间/容量”相关字段，便于固化 parseSpace
+      let hints = [];
+      findSpaceHints(pre.raw, "", hints);
+      console.log("🔍 空间相关字段候选(" + hints.length + "): " + (hints.length ? JSON.stringify(hints) : "无"));
+      console.log("🔑 data 顶层字段: " + JSON.stringify(Object.keys(pre.raw || {})));
+      if (pre.raw && pre.raw.userinfo) console.log("🔑 userinfo 字段: " + JSON.stringify(Object.keys(pre.raw.userinfo)));
       let sp = parseSpace(pre.raw);
       if (sp) messageSuccess += "💾 当前云空间：" + sp + "\n";
     }
