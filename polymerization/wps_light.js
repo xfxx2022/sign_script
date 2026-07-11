@@ -462,11 +462,9 @@ function execHandle(cookie, pos) {
       "img_height": "69.184"
     };
 
-    let resp = HTTP.fetch(url, {
-      method: "post",
-      headers: headers,
-      data: data,
-    });
+    // AirScript 2.0 中 HTTP.fetch 对 data 对象的序列化不稳定，
+    // 使用 HTTP.post(url, data, { headers }) 与能跑的 golo.js 等脚本一致。
+    let resp = HTTP.post(url, data, { headers: headers });
 
     if (resp.status == 200) {
       try {
