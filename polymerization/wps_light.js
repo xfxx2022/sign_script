@@ -457,20 +457,33 @@ function execHandle(cookie, pos) {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/46.0.2486.0 Safari/537.36 Edge/13.10586"
     };
 
-    // 解析响应，返回 { ok: true/false, result: "ok"|"error"|... , msg: string }
+    // 解析响应，返回 { ok, result, msg, data }
     function parseSignResp(resp) {
-      if (resp.status != 200) return { ok: false, result: "", msg: "HTTP " + resp.status };
+      if (resp.status != 200) return { ok: false, result: "", msg: "HTTP " + resp.status, data: null };
       try {
         let j = resp.json();
-        return { ok: true, result: j["result"] || "", msg: j["msg"] || "" };
+        return { ok: true, result: j["result"] || "", msg: j["msg"] || "", data: j["data"] || null };
       } catch {
-        return { ok: true, result: "", msg: "响应解析错误" };
+        return { ok: true, result: "", msg: "响应解析错误", data: null };
       }
+    }
+
+    // 把服务端返回 data 里的奖励翻译成可读文案
+    function formatReward(data) {
+      if (!data) return "";
+      let gift = data["gift_type"] || "";
+      if (gift.indexOf("space_") == 0) {
+        let mb = gift.substring(6);
+        let extra = data["double"] == 1 ? "（已加倍）" : "";
+        return mb + " MB 云空间" + extra;
+      }
+      return "奖励(" + JSON.stringify(data) + ")";
     }
 
     function reportResult(r) {
       if (r.result == "ok" || r.msg == "ok") {
-        messageSuccess += "🎉 签到成功\n";
+        let reward = formatReward(r.data);
+        messageSuccess += "🎉 签到成功" + (reward != "" ? "，获得 " + reward : "") + "\n";
         return true;
       }
       if (r.msg.indexOf("已经") >= 0 || r.msg.indexOf("已签") >= 0 || r.msg.indexOf("had") >= 0) {
