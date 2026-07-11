@@ -493,6 +493,22 @@ function execHandle(cookie, pos) {
       return false;
     }
 
+    // 把服务端错误码翻译成人话，避免只显示“10003”这种天书
+    function describeFail(r) {
+      let m = (r.msg == null ? "" : r.msg).toString();
+      // 登录态/鉴权失效：WPS 新版把“cookie 失效”的空 msg 改为返回 10003
+      if (m == "10003" || m == "") {
+        return "wps_sid 已过期/失效，请在「wps」分配置表重新填写 cookie（重新登录 vip.wps.cn 后获取 wps_sid）";
+      }
+      if (m.indexOf("captcha") >= 0 || m.indexOf("验证码") >= 0) {
+        return "被风控要求验证码，暂时无法自动通过，可关闭本账号列E或手动签到";
+      }
+      if (m.indexOf("已经") >= 0 || m.indexOf("已签") >= 0 || m.indexOf("had") >= 0) {
+        return "今日已签到";
+      }
+      return "签到失败（服务端：" + m + "）";
+    }
+
     // 1. 先尝试不带验证码坐标（部分账号/时段可直接免验证）
     console.log("📡 轻量版：先尝试免验证签到");
     let resp0 = HTTP.post(url, { "platform": "8" }, { headers: headers });
@@ -525,10 +541,10 @@ function execHandle(cookie, pos) {
         sleep(300);
       }
       if (!ok) {
-        messageFail += "❌ 签到失败：" + r0.msg + "（带坐标重试 10 次未通过）\n";
+        messageFail += "❌ " + describeFail(r0) + "（带坐标重试 10 次未通过）\n";
       }
     } else {
-      messageFail += "❌ 签到失败：" + r0.msg + "\n";
+      messageFail += "❌ " + describeFail(r0) + "\n";
     }
 
   } catch {
