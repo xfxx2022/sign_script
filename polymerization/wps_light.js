@@ -492,11 +492,13 @@ function execHandle(cookie, pos) {
       }
     }
 
-    // 递归查找 data 里所有“空间/容量”相关字段（字段名/单位不确定，先采集真实结构）
+    // 递归查找 data 里所有“空间/容量”相关字段（用 Object.keys，兼容 AirScript 2.0 的 for...in 限制）
     function findSpaceHints(obj, path, out) {
       if (!obj || typeof obj !== "object") return;
       if (out.length > 50) return; // 防止超大对象刷屏
-      for (let k in obj) {
+      let keys = Object.keys(obj);
+      for (let i = 0; i < keys.length; i++) {
+        let k = keys[i];
         let lower = ("" + k).toLowerCase();
         let hit = lower.indexOf("space") >= 0 || lower.indexOf("capacity") >= 0 ||
                   lower.indexOf("quota") >= 0 || lower.indexOf("cloud") >= 0 ||
@@ -510,28 +512,46 @@ function execHandle(cookie, pos) {
       }
     }
 
-    // 从 get_data 的 data 中尽力解析云空间总量（递归查找，兼容 userinfo 内嵌）
-    function parseSpace(raw) {
-      if (!raw) return null;
-      let hints = [];
-      findSpaceHints(raw, "", hints);
-      let totalVal = null, spaceVal = null;
-      for (let h of hints) {
-        let key = h.key.toLowerCase();
-        let val = parseFloat(h.val);
-        if (isNaN(val)) continue;
-        if (key.indexOf("total") >= 0 || key.indexOf("capacity") >= 0 || key.indexOf("quota") >= 0) {
-          if (totalVal === null) totalVal = val;
-        } else if (key.indexOf("space") >= 0) {
-          if (spaceVal === null) spaceVal = val;
-        }
+    // 字节数自适应单位（含 TB）
+    function fmtBytes(v) {
+      if (v >= 1024 * 1024 * 1024 * 1024) return (v / (1024 * 1024 * 1024 * 1024)).toFixed(2) + " TB";
+      if (v >= 1024 * 1024 * 1024) return (v / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+      if (v >= 1024 * 1024) return (v / (1024 * 1024)).toFixed(2) + " MB";
+      if (v >= 1024) return (v / 1024).toFixed(2) + " KB";
+      return v + " B";
+    }
+
+    // 收集对象内所有正数值（递归，用 Object.keys）
+    function collectNums(obj, out) {
+      if (!obj || typeof obj !== "object") return;
+      let keys = Object.keys(obj);
+      for (let i = 0; i < keys.length; i++) {
+        let k = keys[i];
+        let v = obj[k];
+        if (typeof v === "number" && v > 0) out.push({ key: k, val: v });
+        else if (typeof v === "object") collectNums(v, out);
       }
-      let pick = (totalVal !== null) ? totalVal : spaceVal;
-      if (pick === null) return null;
-      if (pick >= 1024 * 1024 * 1024) return (pick / (1024 * 1024 * 1024)).toFixed(2) + " GB";
-      if (pick >= 1024 * 1024) return (pick / (1024 * 1024)).toFixed(2) + " MB";
-      if (pick >= 1024) return (pick / 1024).toFixed(2) + " KB";
-      return pick + " B";
+    }
+
+    // 精准解析 data.spaces_info（data 顶层已确认存在该字段）
+    function parseSpaceInfo(raw) {
+      let si = raw && raw.spaces_info ? raw.spaces_info : null;
+      if (!si) return null;
+      let nums = [];
+      collectNums(si, nums);
+      if (!nums.length) return null;
+      let total = null, used = null;
+      for (let n of nums) {
+        let kl = ("" + n.key).toLowerCase();
+        if ((kl.indexOf("total") >= 0 || kl.indexOf("capacity") >= 0 || kl.indexOf("quota") >= 0) && total === null) total = n.val;
+        if (kl.indexOf("used") >= 0 && used === null) used = n.val;
+      }
+      if (total === null) { // 无专用 total 字段，取最大数值当总量
+        nums.sort(function (a, b) { return b.val - a.val; });
+        total = nums[0].val;
+      }
+      if (used !== null) return "已用 " + fmtBytes(used) + " / 共 " + fmtBytes(total);
+      return "共 " + fmtBytes(total);
     }
 
     // 把服务端返回 data 里的奖励翻译成可读文案
@@ -579,17 +599,21 @@ function execHandle(cookie, pos) {
     // 0. 预检查今日是否已签（最可靠，避免把“今日已签”误判为失败）
     //    社区 checkinpanel 标准做法：先 GET get_data 看 is_sign，已签就直接结束，不浪费请求。
     let pre = getSignStatus();
-    // 打印 get_data 原始 data 便于确认空间/连签等字段（字段名不确定，先采集）
+    // 打印 get_data 原始 data 便于确认空间/连签等字段
     if (pre.ok) {
       console.log("📊 get_data 原始 data: " + JSON.stringify(pre.raw));
-      // 诊断：递归找出所有“空间/容量”相关字段，便于固化 parseSpace
+      console.log("📦 spaces_info 原始: " + JSON.stringify(pre.raw.spaces_info));
+      // 诊断：递归找出所有“空间/容量”相关字段（验证遍历是否生效）
       let hints = [];
       findSpaceHints(pre.raw, "", hints);
       console.log("🔍 空间相关字段候选(" + hints.length + "): " + (hints.length ? JSON.stringify(hints) : "无"));
-      console.log("🔑 data 顶层字段: " + JSON.stringify(Object.keys(pre.raw || {})));
-      if (pre.raw && pre.raw.userinfo) console.log("🔑 userinfo 字段: " + JSON.stringify(Object.keys(pre.raw.userinfo)));
-      let sp = parseSpace(pre.raw);
-      if (sp) messageSuccess += "💾 当前云空间：" + sp + "\n";
+      // 精准解析 spaces_info（已确认 data 顶层存在该字段）
+      let sp = parseSpaceInfo(pre.raw);
+      if (sp) {
+        messageSuccess += "💾 当前云空间：" + sp + "\n";
+      } else {
+        console.log("⚠️ 未能从 spaces_info 解析出空间数值，请检查 📦 行");
+      }
     }
     if (pre.ok && pre.isSign) {
       console.log("📢 预检查：今日已签到，直接结束");
