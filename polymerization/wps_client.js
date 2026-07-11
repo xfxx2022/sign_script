@@ -524,7 +524,7 @@ function execHandle(cookie, pos) {
         q = clockInQuestion();
         guard++;
       }
-      if (q == null || !q["data"]) return false;
+      if (q == null || !q["data"]) return true; // 无需答题则视为成功
       let options = q["data"]["options"] || [];
       // WPS 会员特权类固定答案集（社区 dailycheckin 验证）
       let answerSet = {
@@ -559,70 +559,49 @@ function execHandle(cookie, pos) {
       return false;
     }
 
-    // 主流程
-    let r = clockIn();
-    let handled = handleResult(r);
-    if (handled != null) {
-      if (handled.indexOf("🎉") >= 0) {
-        messageSuccess += handled;
-      } else {
-        messageFail += handled;
-      }
-    } else {
+    // 主流程封装：处理报名/答题/验证码兜底，返回最终消息串
+    function tryClockIn() {
+      let r = clockIn();
+      let h = handleResult(r);
+      if (h != null) return h;            // 成功或硬失败
       let msg = r["msg"] || "";
       if (msg == "前一天未报名") {
         console.log("📢 前一天未报名，尝试自动报名");
-        try {
-          HTTP.post(signUpUrl, { headers: postHeaders });
-        } catch {
-          // 忽略报名失败，继续
-        }
+        try { HTTP.post(signUpUrl, { headers: postHeaders }); } catch {}
         sleep(1500);
+        doQuiz();                          // 报名后可能触发新题
+        sleep(1200);
         let r2 = clockIn();
-        let handled2 = handleResult(r2);
-        if (handled2 != null) {
-          if (handled2.indexOf("🎉") >= 0) {
-            messageSuccess += "🎉 打卡成功（已自动报名）\n";
-          } else {
-            messageFail += handled2;
-          }
-        } else if ((r2["msg"] || "").indexOf("答题未通过") >= 0) {
-          if (doQuiz()) {
-            sleep(1500);
-            let r3 = clockIn();
-            let h3 = handleResult(r3);
-            if (h3 != null && h3.indexOf("🎉") >= 0) messageSuccess += "🎉 打卡成功\n";
-            else messageFail += (h3 != null ? h3 : "❌ 打卡失败：" + (r3["msg"] || "未知错误") + "\n");
-          } else {
-            messageFail += "❌ 答题失败，无法完成打卡\n";
-          }
-        } else {
-          messageFail += "❌ 打卡失败：" + (r2["msg"] || "未知错误") + "\n";
-        }
-      } else if (msg.indexOf("答题未通过") >= 0) {
+        let h2 = handleResult(r2);
+        if (h2 != null && h2.indexOf("🎉") >= 0) return "🎉 打卡成功（已自动报名）\n";
+        return h2 != null ? h2 : "❌ 打卡失败：" + (r2["msg"] || "未知错误") + "\n";
+      }
+      if (msg.indexOf("答题未通过") >= 0) {
         console.log("📢 需要答题，开始自动作答");
         if (doQuiz()) {
           sleep(1500);
           let r2 = clockIn();
-          let handled2 = handleResult(r2);
-          if (handled2 != null) {
-            if (handled2.indexOf("🎉") >= 0) {
-              messageSuccess += "🎉 打卡成功\n";
-            } else {
-              messageFail += handled2;
-            }
-          } else {
-            messageFail += "❌ 打卡失败：" + (r2["msg"] || "未知错误") + "\n";
-          }
-        } else {
-          messageFail += "❌ 答题失败，无法完成打卡\n";
+          let h2 = handleResult(r2);
+          if (h2 != null && h2.indexOf("🎉") >= 0) return "🎉 打卡成功\n";
+          return h2 != null ? h2 : "❌ 打卡失败：" + (r2["msg"] || "未知错误") + "\n";
         }
-      } else if (msg.indexOf("Captcha") >= 0 || msg.indexOf("ClientCode") >= 0 || msg.indexOf("Required") >= 0) {
-        // 极端兜底：即便 ?member=wps 仍被要求微信验证码（需 wx.login()），优雅跳过
-        messageFail += "⚠️ 渠道2打卡端点现需微信验证码(captcha/clientCode)，自动化无法完成；\n   请改用 WPS 微信小程序手动打卡，或在分表将该行「列F」设为「否」关闭本渠道\n";
-      } else {
-        messageFail += "❌ 打卡失败：" + msg + "\n";
+        return "❌ 答题失败，无法完成打卡\n";
       }
+      if (msg.indexOf("Captcha") >= 0 || msg.indexOf("ClientCode") >= 0 || msg.indexOf("Required") >= 0) {
+        // 极端兜底：即便 ?member=wps 仍被要求微信验证码（需 wx.login()），优雅跳过
+        return "⚠️ 渠道2打卡端点现需微信验证码(captcha/clientCode)，自动化无法完成；\n   请改用 WPS 微信小程序手动打卡，或在分表将该行「列F」设为「否」关闭本渠道\n";
+      }
+      return "❌ 打卡失败：" + msg + "\n";
+    }
+
+    // 先尝试答题（今日有题则作答，无题则跳过），再打卡；最大化兼容不同返回结构
+    doQuiz();
+    sleep(1200);
+    let finalMsg = tryClockIn();
+    if (finalMsg.indexOf("🎉") >= 0) {
+      messageSuccess += finalMsg;
+    } else {
+      messageFail += finalMsg;
     }
 
   } catch {
