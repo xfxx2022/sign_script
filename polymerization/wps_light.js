@@ -492,26 +492,6 @@ function execHandle(cookie, pos) {
       }
     }
 
-    // 递归查找 data 里所有“空间/容量”相关字段（用 Object.keys，兼容 AirScript 2.0 的 for...in 限制）
-    function findSpaceHints(obj, path, out) {
-      if (!obj || typeof obj !== "object") return;
-      if (out.length > 50) return; // 防止超大对象刷屏
-      let keys = Object.keys(obj);
-      for (let i = 0; i < keys.length; i++) {
-        let k = keys[i];
-        let lower = ("" + k).toLowerCase();
-        let hit = lower.indexOf("space") >= 0 || lower.indexOf("capacity") >= 0 ||
-                  lower.indexOf("quota") >= 0 || lower.indexOf("cloud") >= 0 ||
-                  lower.indexOf("storage") >= 0 || lower.indexOf("room") >= 0 ||
-                  lower === "used" || lower === "total";
-        let v = obj[k];
-        if (hit && (typeof v === "number" || typeof v === "string") && v !== "" && v !== null) {
-          out.push({ key: (path ? path + "." : "") + k, val: v });
-        }
-        if (v && typeof v === "object") findSpaceHints(v, (path ? path + "." : "") + k, out);
-      }
-    }
-
     // 字节数自适应单位（含 TB）
     function fmtBytes(v) {
       if (v >= 1024 * 1024 * 1024 * 1024) return (v / (1024 * 1024 * 1024 * 1024)).toFixed(2) + " TB";
@@ -598,7 +578,6 @@ function execHandle(cookie, pos) {
 
     function reportResult(r) {
       if (r.result == "ok" || r.msg == "ok") {
-        console.log("📊 签到成功 data: " + JSON.stringify(r.data));
         let reward = formatReward(r.data);
         messageSuccess += "🎉 签到成功" + (reward != "" ? "，获得 " + reward : "") + "\n";
         return true;
@@ -629,39 +608,12 @@ function execHandle(cookie, pos) {
     // 0. 预检查今日是否已签（最可靠，避免把“今日已签”误判为失败）
     //    社区 checkinpanel 标准做法：先 GET get_data 看 is_sign，已签就直接结束，不浪费请求。
     let pre = getSignStatus();
-    // 打印 get_data 原始 data 便于确认空间/连签等字段
     if (pre.ok) {
-      console.log("📊 get_data 原始 data: " + JSON.stringify(pre.raw));
-      console.log("📦 spaces_info 原始: " + JSON.stringify(pre.raw.spaces_info));
-      // 诊断：打印可能含空间/奖励的字段原始值，便于确认单位与含义
-      let probeKeys = ["total_sign_rewards", "day_sign_rewards", "month_rewards", "integral", "additional_sign_times"];
-      for (let rk of probeKeys) {
-        if (typeof pre.raw[rk] !== "undefined") console.log("🔢 " + rk + " = " + JSON.stringify(pre.raw[rk]));
-      }
-      if (pre.raw.userinfo) {
-        let ui = pre.raw.userinfo;
-        for (let rk of ["vip", "wealth", "total_buy", "mb_discount"]) {
-          if (typeof ui[rk] !== "undefined") console.log("🔢 userinfo." + rk + " = " + JSON.stringify(ui[rk]));
-        }
-      }
-      // 递归找出所有“空间/容量”相关字段（验证遍历是否生效）
-      let hints = [];
-      findSpaceHints(pre.raw, "", hints);
-      console.log("🔍 空间相关字段候选(" + hints.length + "): " + (hints.length ? JSON.stringify(hints) : "无"));
-      // 1) 优先用 spaces_info（若服务端返回了真实云盘容量）
+      // spaces_info 恒为空数组，该接口不返回云空间容量；退而显示真实奖励信息（稻米里程碑+积分）
       let sp = parseSpaceInfo(pre.raw);
-      if (sp) {
-        messageSuccess += "💾 当前云空间：" + sp + "\n";
-      } else {
-        // spaces_info 为空数组（已确认）：该接口不返回云空间容量，退而显示真实奖励信息（稻米/积分里程碑，非云空间 MB）
-        let rl = parseSignRewards(pre.raw);
-        if (rl.length) {
-          for (let l of rl) messageSuccess += l + "\n";
-          console.log("💡 spaces_info 为空：get_data 不返回云空间容量，已显示真实奖励信息（稻米/积分里程碑，非云空间 MB）");
-        } else {
-          console.log("⚠️ spaces_info 为空且无奖励字段，该接口不返回账号总容量，需另寻 kdocs/drive 类接口");
-        }
-      }
+      if (sp) messageSuccess += "💾 当前云空间：" + sp + "\n";
+      let rl = parseSignRewards(pre.raw);
+      for (let l of rl) messageSuccess += l + "\n";
     }
     if (pre.ok && pre.isSign) {
       console.log("📢 预检查：今日已签到，直接结束");
