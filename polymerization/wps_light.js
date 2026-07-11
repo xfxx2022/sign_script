@@ -8,6 +8,7 @@
     备注：WPS轻量版/手机端签到，接口 vip.wps.cn/sign/v2。
           ✅ 已完善：签到前先调 get_data 预检查 is_sign，已签直接结束（不再误跑验证码重试）；
              10003 在预检查 is_sign=false 时才走验证码重试；连续 TryLater 判定为限流提前退出。
+             日志额外打印 get_data 原始 data，并尝试显示「当前云空间」（字段名待用户确认后固化）。
           配合“wps”分配置表使用（cookie 即 wps_sid）。
           “wps”分配置表列：A=cookie，B=是否执行，C=账号名称，
           D=转存PPT(稻壳版用)，E=是否渠道1打卡(本脚本用)，F=是否渠道2打卡，G=Signature(渠道2)
@@ -483,12 +484,28 @@ function execHandle(cookie, pos) {
         if (resp.status != 200) return { ok: false, reason: "HTTP " + resp.status };
         let j = resp.json();
         if (j && j.data && typeof j.data.is_sign !== "undefined") {
-          return { ok: true, isSign: (j.data.is_sign === true || j.data.is_sign === 1) };
+          return { ok: true, isSign: (j.data.is_sign === true || j.data.is_sign === 1), raw: j.data };
         }
         return { ok: false, reason: "无is_sign字段" };
       } catch (e) {
         return { ok: false, reason: "请求异常" };
       }
+    }
+
+    // 从 get_data 的 data 中尽力解析云空间总量（字段名/单位不确定，做容错）
+    function parseSpace(raw) {
+      if (!raw) return null;
+      let candidates = ["space", "total_space", "space_total", "cloud_space", "my_space", "all_space", "quota", "capacity", "space_size", "totalSpace", "cloudSpace", "member_space"];
+      for (let k of candidates) {
+        let v = raw[k];
+        if (typeof v === "number" && v > 0) {
+          if (v >= 1024 * 1024 * 1024) return (v / 1024 / 1024 / 1024).toFixed(2) + " GB";
+          if (v >= 1024 * 1024) return (v / 1024 / 1024).toFixed(2) + " MB";
+          if (v >= 1024) return (v / 1024).toFixed(2) + " KB";
+          return v + " B";
+        }
+      }
+      return null;
     }
 
     // 把服务端返回 data 里的奖励翻译成可读文案
@@ -505,6 +522,7 @@ function execHandle(cookie, pos) {
 
     function reportResult(r) {
       if (r.result == "ok" || r.msg == "ok") {
+        console.log("📊 签到成功 data: " + JSON.stringify(r.data));
         let reward = formatReward(r.data);
         messageSuccess += "🎉 签到成功" + (reward != "" ? "，获得 " + reward : "") + "\n";
         return true;
@@ -535,6 +553,12 @@ function execHandle(cookie, pos) {
     // 0. 预检查今日是否已签（最可靠，避免把“今日已签”误判为失败）
     //    社区 checkinpanel 标准做法：先 GET get_data 看 is_sign，已签就直接结束，不浪费请求。
     let pre = getSignStatus();
+    // 打印 get_data 原始 data 便于确认空间/连签等字段（字段名不确定，先采集）
+    if (pre.ok) {
+      console.log("📊 get_data 原始 data: " + JSON.stringify(pre.raw));
+      let sp = parseSpace(pre.raw);
+      if (sp) messageSuccess += "💾 当前云空间：" + sp + "\n";
+    }
     if (pre.ok && pre.isSign) {
       console.log("📢 预检查：今日已签到，直接结束");
       messageSuccess += "📢 今日已签到\n";
