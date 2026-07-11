@@ -452,15 +452,24 @@ function execHandle(cookie, pos) {
       return;
     }
 
-    // 当前可用端点：会员时长打卡。使用 sid 请求头（即 wps_sid 值），无需签名。
-    let url = "https://zt.wps.cn/2018/clock_in/api/clock_in";
+    // 会员时长打卡：使用 sid 请求头（wps_sid 值）。
+    // 走 ?member=wps 答题流程——该路径用答题代替裸端点的微信验证码墙，可自动化。
+    let url = "https://zt.wps.cn/2018/clock_in/api/clock_in?member=wps";
     let signUpUrl = "https://zt.wps.cn/2018/clock_in/api/sign_up";
+    let getQuestionUrl = "https://zt.wps.cn/2018/clock_in/api/get_question?member=wps";
+    let answerUrl = "https://zt.wps.cn/2018/clock_in/api/answer?member=wps";
     headers = {
       "sid": cookie,
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/46.0.2486.0 Safari/537.36 Edge/13.10586"
     };
+    // AirScript 2.0 下 POST 必须显式声明 Content-Type，否则被 ZLB 以 400 拒绝
+    postHeaders = {
+      "sid": cookie,
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/46.0.2486.0 Safari/537.36 Edge/13.10586"
+    };
 
-    // 发起一次打卡请求，返回解析后的响应对象或 null
+    // 发起一次打卡请求，返回解析后的响应对象或错误标记
     function clockIn() {
       let resp = HTTP.get(url, { headers: headers });
       if (resp.status == 200) {
@@ -476,6 +485,21 @@ function execHandle(cookie, pos) {
       }
     }
 
+    function clockInQuestion() {
+      let resp = HTTP.get(getQuestionUrl, { headers: headers });
+      if (resp.status == 200) {
+        try {
+          return resp.json();
+        } catch {
+          console.log(resp.text());
+          return null;
+        }
+      }
+      console.log(resp.text());
+      return null;
+    }
+
+    // 解析打卡结果：成功返回“🎉...”，其它返回 null（需进一步判断）
     function handleResult(r) {
       if (r.__httpError != undefined) {
         return "❌ 打卡失败：HTTP " + r.__httpError + "\n";
@@ -488,9 +512,54 @@ function execHandle(cookie, pos) {
       if (result == "ok" || msg == "已打卡" || msg == "ok") {
         return "🎉 打卡成功\n";
       }
-      return null; // 需要进一步判断（如未报名）
+      return null;
     }
 
+    // 答题流程：跳过多选题，用固定答案集匹配单选题作答；答错则逐选项重试
+    function doQuiz() {
+      let q = clockInQuestion();
+      let guard = 0;
+      while (q != null && q["data"] && q["data"]["multi_select"] == 1 && guard < 10) {
+        sleep(800);
+        q = clockInQuestion();
+        guard++;
+      }
+      if (q == null || !q["data"]) return false;
+      let options = q["data"]["options"] || [];
+      // WPS 会员特权类固定答案集（社区 dailycheckin 验证）
+      let answerSet = {
+        "WPS会员全文检索": 1, "100G": 1, "WPS会员数据恢复": 1, "WPS会员PDF转doc": 1,
+        "WPS会员PDF转图片": 1, "WPS图片转PDF插件": 1, "金山PDF转WORD": 1, "WPS会员拍照转文字": 1,
+        "使用WPS会员修复": 1, "WPS全文检索功能": 1, "有,且无限次": 1, "文档修复": 1
+      };
+      let answerId = 3; // 默认第3项（选项索引从1开始）
+      for (let i = 0; i < options.length; i++) {
+        if (answerSet[options[i]] == 1) { answerId = i + 1; break; }
+      }
+      let resp = HTTP.post(answerUrl, { headers: postHeaders, data: { answer: answerId } });
+      if (resp.status != 200) { console.log(resp.text()); return false; }
+      try {
+        let ar = resp.json();
+        if (ar["result"] == "ok" || ar["msg"] == "ok") return true;
+        if (ar["msg"] == "wrong answer") {
+          // 逐选项重试
+          for (let i = 1; i <= options.length; i++) {
+            let r2 = HTTP.post(answerUrl, { headers: postHeaders, data: { answer: i } });
+            if (r2.status == 200) {
+              try {
+                let ar2 = r2.json();
+                if (ar2["result"] == "ok" || ar2["msg"] == "ok") return true;
+              } catch {}
+            }
+          }
+        }
+      } catch {
+        console.log(resp.text());
+      }
+      return false;
+    }
+
+    // 主流程
     let r = clockIn();
     let handled = handleResult(r);
     if (handled != null) {
@@ -500,14 +569,13 @@ function execHandle(cookie, pos) {
         messageFail += handled;
       }
     } else {
-      // 返回 null：可能是“前一天未报名”，尝试自动报名后重试一次
       let msg = r["msg"] || "";
       if (msg == "前一天未报名") {
         console.log("📢 前一天未报名，尝试自动报名");
         try {
-          HTTP.post(signUpUrl, { headers: headers });
+          HTTP.post(signUpUrl, { headers: postHeaders });
         } catch {
-          // 忽略报名失败，继续重试打卡
+          // 忽略报名失败，继续
         }
         sleep(1500);
         let r2 = clockIn();
@@ -518,12 +586,39 @@ function execHandle(cookie, pos) {
           } else {
             messageFail += handled2;
           }
+        } else if ((r2["msg"] || "").indexOf("答题未通过") >= 0) {
+          if (doQuiz()) {
+            sleep(1500);
+            let r3 = clockIn();
+            let h3 = handleResult(r3);
+            if (h3 != null && h3.indexOf("🎉") >= 0) messageSuccess += "🎉 打卡成功\n";
+            else messageFail += (h3 != null ? h3 : "❌ 打卡失败：" + (r3["msg"] || "未知错误") + "\n");
+          } else {
+            messageFail += "❌ 答题失败，无法完成打卡\n";
+          }
         } else {
           messageFail += "❌ 打卡失败：" + (r2["msg"] || "未知错误") + "\n";
         }
+      } else if (msg.indexOf("答题未通过") >= 0) {
+        console.log("📢 需要答题，开始自动作答");
+        if (doQuiz()) {
+          sleep(1500);
+          let r2 = clockIn();
+          let handled2 = handleResult(r2);
+          if (handled2 != null) {
+            if (handled2.indexOf("🎉") >= 0) {
+              messageSuccess += "🎉 打卡成功\n";
+            } else {
+              messageFail += handled2;
+            }
+          } else {
+            messageFail += "❌ 打卡失败：" + (r2["msg"] || "未知错误") + "\n";
+          }
+        } else {
+          messageFail += "❌ 答题失败，无法完成打卡\n";
+        }
       } else if (msg.indexOf("Captcha") >= 0 || msg.indexOf("ClientCode") >= 0 || msg.indexOf("Required") >= 0) {
-        // 端点已升级：现强制要求微信验证码(captcha)与客户端标识(clientCode)。
-        // 该验证码需调用微信 wx.login() 获取，自动化脚本无法取得，故优雅跳过本渠道。
+        // 极端兜底：即便 ?member=wps 仍被要求微信验证码（需 wx.login()），优雅跳过
         messageFail += "⚠️ 渠道2打卡端点现需微信验证码(captcha/clientCode)，自动化无法完成；\n   请改用 WPS 微信小程序手动打卡，或在分表将该行「列F」设为「否」关闭本渠道\n";
       } else {
         messageFail += "❌ 打卡失败：" + msg + "\n";
