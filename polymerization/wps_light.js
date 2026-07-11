@@ -6,7 +6,8 @@
     环境变量名：无
     环境变量值：无
     备注：WPS轻量版/手机端签到，接口 vip.wps.cn/sign/v2。
-          ⚠️ 返回 result=error & msg=10003 多为“需验证码/风控”或“今日已签”，免验证失败会统一走验证码重试；若重试仍失败按提示去 vip.wps.cn 自查。
+          ✅ 已完善：签到前先调 get_data 预检查 is_sign，已签直接结束（不再误跑验证码重试）；
+             10003 在预检查 is_sign=false 时才走验证码重试；连续 TryLater 判定为限流提前退出。
           配合“wps”分配置表使用（cookie 即 wps_sid）。
           “wps”分配置表列：A=cookie，B=是否执行，C=账号名称，
           D=转存PPT(稻壳版用)，E=是否渠道1打卡(本脚本用)，F=是否渠道2打卡，G=Signature(渠道2)
@@ -469,6 +470,27 @@ function execHandle(cookie, pos) {
       }
     }
 
+    // 预检查：查询今日是否已签（最可靠，避免把“今日已签”误判为失败）
+    // 接口返回 data.is_sign 为 true 即今日已签到；该接口为社区 checkinpanel 标准做法
+    function getSignStatus() {
+      let sUrl = "https://vip.wps.cn/sign/mobile/v3/get_data";
+      let sHeaders = {
+        "Cookie": "wps_sid=" + cookie,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/46.0.2486.0 Safari/537.36 Edge/13.10586"
+      };
+      try {
+        let resp = HTTP.get(sUrl, { headers: sHeaders });
+        if (resp.status != 200) return { ok: false, reason: "HTTP " + resp.status };
+        let j = resp.json();
+        if (j && j.data && typeof j.data.is_sign !== "undefined") {
+          return { ok: true, isSign: (j.data.is_sign === true || j.data.is_sign === 1) };
+        }
+        return { ok: false, reason: "无is_sign字段" };
+      } catch (e) {
+        return { ok: false, reason: "请求异常" };
+      }
+    }
+
     // 把服务端返回 data 里的奖励翻译成可读文案
     function formatReward(data) {
       if (!data) return "";
@@ -499,7 +521,7 @@ function execHandle(cookie, pos) {
       let m = (r.msg == null ? "" : r.msg).toString();
       // 10003 在 WPS 轻量版单凭数字码无法区分，常见三种：①今日已签到 ②wps_sid 过期 ③风控验证码，给出自查指引
       if (m == "10003" || m == "") {
-        return "返回 10003（登录/验证类）：请去 vip.wps.cn 自查——显示『今日已签』则无需处理；要求重新登录则 wps_sid 过期需更新「wps」分表 cookie；都正常则是风控验证码，可稍后重试或手动签";
+        return "未签到状态收到 10003：多为 wps_sid 过期需重新登录，或触发验证码风控。请去 vip.wps.cn 自查登录态，或稍后重试/手动签（已排除今日已签，因预检查 is_sign=false）";
       }
       if (m.indexOf("captcha") >= 0 || m.indexOf("验证码") >= 0) {
         return "被风控要求验证码，暂时无法自动通过，可关闭本账号列E或手动签到";
@@ -510,41 +532,64 @@ function execHandle(cookie, pos) {
       return "签到失败（服务端：" + m + "）";
     }
 
-    // 1. 先尝试不带验证码坐标（部分账号/时段可直接免验证）
-    console.log("📡 轻量版：先尝试免验证签到");
-    let resp0 = HTTP.post(url, { "platform": "8" }, { headers: headers });
-    let r0 = parseSignResp(resp0);
-    console.log(r0);
-    if (reportResult(r0)) {
-      // 免验证直接成功或今日已签到，结束
+    // 0. 预检查今日是否已签（最可靠，避免把“今日已签”误判为失败）
+    //    社区 checkinpanel 标准做法：先 GET get_data 看 is_sign，已签就直接结束，不浪费请求。
+    let pre = getSignStatus();
+    if (pre.ok && pre.isSign) {
+      console.log("📢 预检查：今日已签到，直接结束");
+      messageSuccess += "📢 今日已签到\n";
     } else {
-      // 2. 免验证未通过（含 10003 等），统一刷新验证码 + 带坐标重试
-      //    说明：WPS 现可能用 result=error&msg=10003 表示“需验证码/风控”，
-      //          不一定带 captcha 文案；社区 ck_wps.py 对 result=error 一律走验证码重试。
-      console.log("📡 免验证未通过（" + (r0.msg || "") + "），尝试刷新验证码并带坐标重试");
-      let dataWithCaptcha = {
-        "platform": "8",
-        "captcha_pos": "137.00431974731889, 36.00431593261568",
-        "img_witdh": "275.164",
-        "img_height": "69.184"
-      };
-      let ok = false;
-      for (let n = 0; n < 10; n++) {
-        try {
-          HTTP.get(captchaUrl, { headers: headers }); // 触发服务端刷新验证码
-        } catch {}
-        sleep(200);
-        let resp = HTTP.post(url, dataWithCaptcha, { headers: headers });
-        let r = parseSignResp(resp);
-        console.log("第" + (n + 1) + "次带坐标尝试：" + JSON.stringify(r));
-        if (reportResult(r)) {
-          ok = true;
-          break;
-        }
-        sleep(300);
+      if (!pre.ok) {
+        console.log("⚠️ 预检查不可用（" + (pre.reason || "") + "），继续走真实签到流程");
       }
-      if (!ok) {
-        messageFail += "❌ " + describeFail(r0) + "（带坐标重试 10 次未通过）\n";
+      // 1. 先尝试不带验证码坐标（部分账号/时段可直接免验证）
+      console.log("📡 轻量版：先尝试免验证签到");
+      let resp0 = HTTP.post(url, { "platform": "8" }, { headers: headers });
+      let r0 = parseSignResp(resp0);
+      console.log(r0);
+      if (reportResult(r0)) {
+        // 免验证直接成功或今日已签到，结束
+      } else if (r0.result == "error" && (r0.msg == "10003" || r0.msg == "")) {
+        // 2. 免验证未通过（10003/空msg）：可能是需验证码风控或 wps_sid 失效。
+        //    注意：此处已排除“今日已签”（预检查 is_sign=false），所以 10003 是真失败，走验证码重试。
+        console.log("📡 免验证未通过（" + (r0.msg || "") + "），尝试刷新验证码并带坐标重试");
+        let dataWithCaptcha = {
+          "platform": "8",
+          "captcha_pos": "137.00431974731889, 36.00431593261568",
+          "img_witdh": "275.164",
+          "img_height": "69.184"
+        };
+        let ok = false;
+        let rateLimited = false;
+        for (let n = 0; n < 10; n++) {
+          try {
+            HTTP.get(captchaUrl, { headers: headers }); // 触发服务端刷新验证码
+          } catch {}
+          sleep(300);
+          let resp = HTTP.post(url, dataWithCaptcha, { headers: headers });
+          let r = parseSignResp(resp);
+          console.log("第" + (n + 1) + "次带坐标尝试：" + JSON.stringify(r));
+          if (reportResult(r)) {
+            ok = true;
+            break;
+          }
+          if (r.msg == "TryLater") {
+            // 被限流：同一 sid 短时间内狂刷验证码接口会触发，继续重试无意义，提前退出
+            rateLimited = true;
+            break;
+          }
+          sleep(300);
+        }
+        if (!ok) {
+          if (rateLimited) {
+            messageFail += "❌ " + describeFail(r0) + "（验证码重试被限流 TryLater，请稍后或手动签）\n";
+          } else {
+            messageFail += "❌ " + describeFail(r0) + "（带坐标重试 10 次未通过）\n";
+          }
+        }
+      } else {
+        // 其他错误（如 captcha/验证码文案、未知码）
+        messageFail += "❌ " + describeFail(r0) + "\n";
       }
     }
 
