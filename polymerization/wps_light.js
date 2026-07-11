@@ -533,7 +533,7 @@ function execHandle(cookie, pos) {
       }
     }
 
-    // 精准解析 data.spaces_info（data 顶层已确认存在该字段）
+    // 解析 data.spaces_info（data 顶层存在该字段；实测为恒空数组，轻量版 get_data 不返回账号云空间容量）
     function parseSpaceInfo(raw) {
       let si = raw && raw.spaces_info ? raw.spaces_info : null;
       if (!si) return null;
@@ -554,13 +554,14 @@ function execHandle(cookie, pos) {
       return "共 " + fmtBytes(total);
     }
 
-    // 解析“签到累计奖励”字段（data 顶层 total_sign_rewards / day_sign_rewards / month_rewards）。
-    // 轻量版签到奖励为 space_N（N MB 云空间），这些累计字段通常为 MB 数值或 {space:N} 结构。
+    // 解析累计签到奖励信息（data 顶层 total_sign_rewards 等）。
+    // 实测结构：数组，每项 {day, reward_type:"daomi", count, tips, received}（稻米里程碑，非云空间），
+    //          也可能为数字（MB 云空间）。integral 为积分。
     function parseSignRewards(raw) {
       if (!raw) return [];
       let lines = [];
       let pairs = [
-        ["total_sign_rewards", "📅 累计签到获得"],
+        ["total_sign_rewards", "📅 累计签到奖励"],
         ["day_sign_rewards", "📆 今日签到奖励"],
         ["month_rewards", "🗓 本月签到奖励"]
       ];
@@ -568,10 +569,17 @@ function execHandle(cookie, pos) {
         let v = raw[p[0]];
         if (typeof v === "number" && v > 0) {
           lines.push(p[1] + "：" + v + " MB 云空间");
-        } else if (typeof v === "object" && v !== null) {
-          let si = v["space"] || v["space_total"] || v["mb"];
-          if (typeof si === "number") lines.push(p[1] + "：" + si + " MB 云空间");
+        } else if (Array.isArray(v) && v.length) {
+          let tips = [];
+          for (let it of v) {
+            let t = it && (it["tips"] || (it["day"] ? ("累计签到" + it["day"] + "天") : ""));
+            if (t) tips.push(t);
+          }
+          if (tips.length) lines.push(p[1] + "：" + tips.join("；"));
         }
+      }
+      if (typeof raw["integral"] === "number" && raw["integral"] > 0) {
+        lines.push("💎 积分：" + raw["integral"]);
       }
       return lines;
     }
@@ -645,13 +653,13 @@ function execHandle(cookie, pos) {
       if (sp) {
         messageSuccess += "💾 当前云空间：" + sp + "\n";
       } else {
-        // 2) spaces_info 为空数组（已确认），改用签到累计奖励字段近似显示云空间
+        // spaces_info 为空数组（已确认）：该接口不返回云空间容量，退而显示真实奖励信息（稻米/积分里程碑，非云空间 MB）
         let rl = parseSignRewards(pre.raw);
         if (rl.length) {
           for (let l of rl) messageSuccess += l + "\n";
-          console.log("💡 spaces_info 为空，已用签到累计奖励字段近似显示云空间（单位按 MB 计，若与账号实际不符请告知）");
+          console.log("💡 spaces_info 为空：get_data 不返回云空间容量，已显示真实奖励信息（稻米/积分里程碑，非云空间 MB）");
         } else {
-          console.log("⚠️ spaces_info 为空且无签到累计奖励字段，该接口不返回账号总容量，需另寻接口");
+          console.log("⚠️ spaces_info 为空且无奖励字段，该接口不返回账号总容量，需另寻 kdocs/drive 类接口");
         }
       }
     }
